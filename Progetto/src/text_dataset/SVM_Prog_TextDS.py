@@ -1,0 +1,113 @@
+import numpy as np
+import os
+import pickle
+import pandas as pd
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_val_score
+from sklearn.metrics import classification_report
+from sklearn.svm import SVC
+import matplotlib.pyplot as plt
+from load_text_dataset import train_test_load_tfidf
+from src.path_folders import DRIVE_FOLDER
+
+def report_plot(r_df, title):
+    fig = plt.figure(figsize=(10, 10))
+    axis = fig.add_subplot(111)
+    w = 0.3
+    x_ticks = np.arange(len(classes))
+    r1 = axis.bar(x_ticks-w, r_df['precision'].values[0:len(classes)], width=w, color='b', align='center', label='Precision')
+    r2 = axis.bar(x_ticks, r_df['recall'].values[0:len(classes)], width=w, color='g', align='center', label='Recall')
+    r3 = axis.bar(x_ticks+w, r_df['f1-score'].values[0:len(classes)], width=w, color='r', align='center', label='F1-Score')
+    axis.set_ylabel('Scores')
+    axis.set_title(title+' Classification Report \nTest Set Accuracy: '+str(np.round(r_df.loc['accuracy'][0], 2)))
+    axis.set_xticks(x_ticks)
+    axis.set_xticklabels(classes)
+    axis.legend(loc='upper right')
+    axis.bar_label(r1, padding=3)
+    axis.bar_label(r2, padding=3)
+    axis.bar_label(r3, padding=3)
+    fig.tight_layout()
+    plt.show()
+
+#CARICAMENTO DEI DATASET
+
+SEED = 4040
+np.random.seed(SEED)
+
+max_tokens = 500 # NUMERO MASSIMO DI TOKEN CHE SI CONSIDERANO IN BASE ALLE LORO OCCORRENZE NEI RECORD
+sequence_len = 50 # UNIFORMO LA DIMENSIONE DI OGNI SINGOLO RECORD, EVENTUALMENTE SI EFFETTUERA' PADDING CON 0 SE I RECORD NON CONTENGONO TALE NUMERO DI TOKEN
+split = .15
+
+x_train, x_test, y_train, y_test, classes, vocabulary = train_test_load_tfidf(max_features=max_tokens,  split=split, reduce_labels=True, report=True, return_other=True)
+
+
+# VADO A DEFINIRE IL CLASSIFICATORE SVC E RICERCO I PARAMETRI MIGLIORI TRAMITE L'UTILIZZO DI GRIDSEARCH CV CON 3 FOLD
+
+CV = 3  # IMPIEGO 3 COME VALORE DI CROSS VALIDATION PER GRIDSEARCH PER VIA DELLA LENTEZZA DELLA FASE DI TRAINING
+
+exists = os.path.isfile(os.path.join(DRIVE_FOLDER, 'svc_grid_search_text.hist'))
+if exists:
+    with open(os.path.join(DRIVE_FOLDER, 'svc_grid_search_text.hist'), 'rb') as hist_file:
+        svc_grid_search_CV = pickle.load(hist_file)
+else:
+
+    svc = SVC(cache_size=1000) # PER RENDERE PIU' VELOCE IL TRAIN
+
+    params = {
+        'C': [.5, 1, 2],
+        'kernel': ['linear', 'poly', 'sigmoid', 'rbf'],
+        'gamma': ['scale', 'auto'],
+    }
+
+    svc_grid_search_CV = GridSearchCV(svc, params, cv=CV, scoring='accuracy', n_jobs=-1, verbose=4)
+
+    svc_grid_search_CV.fit(x_train, y_train)
+
+    with open(os.path.join(DRIVE_FOLDER, 'svc_grid_search_text.hist'), 'wb') as hist_file:
+        pickle.dump(svc_grid_search_CV, hist_file)
+
+best_svc = svc_grid_search_CV.best_estimator_
+best_val_accuracy = np.round(svc_grid_search_CV.best_score_, 3)
+
+print(f'Miglior estimator ottenuto: {best_svc}; kernel impiegato dal migliore estimator: {best_svc.kernel}')
+print(f'Valore medio di validation accuracy sui {CV} fold sviluppati da parte del miglior estimator: {best_val_accuracy} \n')
+
+# VADO A TESTARE L'ESTIMATOR OTTENUTO MEDIANTE 10 FOLD CV
+
+FOLDS = 10
+VERBOSE = 1
+
+exist = os.path.isfile(os.path.join(DRIVE_FOLDER, 'best_svc_cv_text.hist'))
+if exist:
+    with open(os.path.join(DRIVE_FOLDER, 'best_svc_cv_text.hist'), 'rb') as hist_file:
+        cv_results = pickle.load(hist_file)
+else:
+    kfold = StratifiedKFold(n_splits=FOLDS, shuffle=True)
+    cv_results = cross_val_score(best_svc, x_train, y_train, cv=kfold, verbose=VERBOSE, n_jobs=-1)
+    with open(os.path.join(DRIVE_FOLDER, 'best_svc_cv_text.hist'), 'wb') as hist_file:
+        pickle.dump(cv_results, hist_file)
+
+# VADO A PLOTTARE I RISULTATI OTTENUTI
+
+plt.figure(figsize=(10, 10))
+plt.ylim([0, 1])
+plt.plot(range(1, 11), cv_results, 'ro', range(1, 11), cv_results, 'k--')
+plt.title(f'SVC \n Validation Accuracy Durante i 10 Folds  \n Validation Accuracy media: {np.round(cv_results.mean(),4)}')
+plt.xlabel('Folds')
+plt.xticks(range(1, 11))
+plt.ylabel('Validation Accuracy')
+plt.show()
+
+# VADO A STAMPARE UN CLASSIFICATION REPORT SUL DATASET DI TEST
+
+predictions = best_svc.predict(x_test)
+
+report = classification_report(y_test, predictions, target_names=classes, output_dict=False, zero_division=0)
+report_dict = classification_report(y_test, predictions, target_names=classes, output_dict=True, zero_division=0)
+report_df = pd.DataFrame(report_dict).transpose()
+
+print("Classification Report:")
+print(report)
+
+# VADO A PLOTTARE I RISULTATI
+
+report_plot(report_df, 'SVC')
